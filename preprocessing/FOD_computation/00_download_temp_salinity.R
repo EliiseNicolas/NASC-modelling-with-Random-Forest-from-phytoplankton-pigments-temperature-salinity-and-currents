@@ -19,11 +19,13 @@
 # not an R package) and the R package `dotenv`.
 #
 # Usage  : from the project root, in R
-#            source("FOD_computation/00_download_temp_salinity.R")
+#          (<script> =
+#           preprocessing/FOD_computation/00_download_temp_salinity.R)
+#            source("<script>")
 #            download_temp_salinity("2022-01-09", "2022-03-03",
 #                                   -60, -20, 40, 95)
 #          or on the command line
-#            Rscript FOD_computation/00_download_temp_salinity.R \
+#            Rscript <script> \
 #              --date-start 2022-01-09 --date-end 2022-03-03 \
 #              --lat-min -60 --lat-max -20 --lon-min 40 --lon-max 95 \
 #              [--output-dir DIR]

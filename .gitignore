@@ -1,0 +1,15 @@
+# R session files
+.Rhistory
+_Rhistory
+.RData
+.Rproj.user/
+
+# Credentials (see .env.example)
+.env
+
+# Data and figures are not versioned
+data/
+figures/
+*.rds
+*.nc
+*.png

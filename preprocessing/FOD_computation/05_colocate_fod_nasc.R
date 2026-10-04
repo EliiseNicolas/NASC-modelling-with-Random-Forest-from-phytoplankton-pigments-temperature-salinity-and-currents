@@ -26,7 +26,7 @@
 
 # ---- Configuration -----------------------------------------------------------
 
-source("config.R")   # years_tag, freqs, directories, nasc_file()
+source("config.R")   # freqs, directories, nasc_file(), fod_nasc_file()
 
 out_dir <- fod_nasc_dir
 
@@ -93,10 +93,7 @@ for (freq in freqs) {
   print(summary(colocated$lon_fod - colocated$lon_sv))
   str(colocated)
 
-  out_file <- file.path(
-    out_dir,
-    paste0("fod_colocated_NASC_per_esu_", years_tag, "_", freq, "kHz.rds")
-  )
+  out_file <- fod_nasc_file(freq)
   saveRDS(colocated, out_file)
   cat("File saved:", out_file, "\n")
 }

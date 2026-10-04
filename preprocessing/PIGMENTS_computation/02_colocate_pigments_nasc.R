@@ -11,12 +11,12 @@
 #
 # Steps  : for each frequency and each ESU, average every variable of the
 #          pigment dataset (concentrations and ratios) over a window of
-#          `window_size` x `window_size` pixels centred on the nearest pixel,
-#          on the same day
+#          `pigments_window_size` x `pigments_window_size` pixels (config.R)
+#          centred on the nearest pixel, on the same day
 #
 # Output : <pigments_nasc_dir>/
 #            pigments_colocated_NASC_per_esu_<n>x<n>_<years_tag>_<freq>kHz.rds
-#          (n = window_size), a data frame with one row per ESU:
+#          (n = pigments_window_size), a data frame with one row per ESU:
 #            time, lat_sv, lon_sv : date and position of the ESU
 #            lat_pig, lon_pig     : matched pigment pixel
 #            Chla, Per, ...       : mean concentration of each pigment
@@ -30,13 +30,14 @@
 
 # ---- Configuration -----------------------------------------------------------
 
-source("config.R")   # years_tag, freqs, directories, pigments_file, nasc_file()
+source("config.R")   # freqs, directories, pigments_file, nasc_file(),
+                     # pigments_nasc_file(), pigments_window_size
 
 in_file <- pigments_file
 out_dir <- pigments_nasc_dir
 
 # Width of the averaging window, in pixels (odd)
-window_size <- 3
+window_size <- pigments_window_size
 
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
 
@@ -119,11 +120,7 @@ for (freq in freqs) {
   print(summary(colocated$lon_pig - colocated$lon_sv))
   str(colocated)
 
-  out_file <- file.path(
-    out_dir,
-    paste0("pigments_colocated_NASC_per_esu_", window_size, "x", window_size,
-           "_", years_tag, "_", freq, "kHz.rds")
-  )
+  out_file <- pigments_nasc_file(freq)
   saveRDS(colocated, out_file)
   cat("File saved:", out_file, "\n")
 }

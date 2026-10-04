@@ -1,0 +1,298 @@
+# ==============================================================================
+# 14_run_prediction_maps.R
+#
+# Random-forest pipeline: prediction maps (complete pixels only, no
+# imputation of the missing covariates)
+#
+# Input  : prediction dataset (02_build_prediction_dataset.R)
+#          <prediction_dataset_file>, a list with date, lon, lat, ftle, pig
+#          (a list of arrays, named like the covariates) and fod; all the
+#          arrays are (date x lon x lat)
+#          models of the target frequency and scheme
+#          (10_run_nested_cv_training.R: models.rds)
+#          learning dataset of the target frequency
+#          (01_build_learning_dataset.R), for the residuals
+#
+# Steps  : 1) single pass over the dates: predict each day once (mean of the
+#             models of the folds), draw the daily map and accumulate the sum
+#             and the number of valid values of the month (constant memory)
+#          2) monthly composites: mean map, with the residuals next to it and
+#             overlaid
+#
+# Output : in <model_out_root>/<freq>kHz/rf/<scheme>/predictions_monthly/
+#            monthly_composite_<YYYY-MM>.csv
+#          in <fig_root_modelling>/<freq>kHz/rf/<scheme>/predictions_daily/
+#            pred_<YYYYMMDD>.png
+#          in <fig_root_modelling>/<freq>kHz/rf/<scheme>/predictions_monthly/
+#            monthly_mean_<YYYY-MM>.png
+#            monthly_mean_residuals_side_<YYYY-MM>.png
+#            monthly_mean_residuals_overlay_<YYYY-MM>.png
+#
+# The monthly residuals pair each observation of the month with the nearest
+# valid pixel (rejected beyond `max_match_dist_deg`). They are NOT the
+# cross-validation residuals.
+#
+# Usage  : optional target, to set in the console before source()
+#            target_freq <- 38 ; target_scheme <- "naive_RS_80_20"
+#            target_months <- "2023-02"   # strongly advised for a first run
+#            save_daily_maps <- FALSE
+#          target_months = NULL processes all the months of the grid (several
+#          hours).
+# ==============================================================================
+
+
+# ---- Configuration -----------------------------------------------------------
+
+source("config.R")   # directories, learning and prediction dataset files
+for (f in c("00_model_config.R", "01_data_prep.R", "03_models.R")) {
+  source(file.path(modelling_dir, f))
+}
+
+if (!exists("target_freq"))     target_freq     <- default_target_freq
+if (!exists("target_scheme"))   target_scheme   <- default_target_scheme
+if (!exists("target_months"))   target_months   <- NULL
+if (!exists("save_daily_maps")) save_daily_maps <- TRUE
+
+# Maximum distance between an observation and a valid pixel to compute a
+# residual (degrees)
+max_match_dist_deg <- 0.1
+
+in_file <- prediction_dataset_file
+out_dir <- scheme_out_dir(target_freq, target_scheme)
+fig_dir <- scheme_fig_dir(target_freq, target_scheme)
+
+monthly_out_dir <- file.path(out_dir, "predictions_monthly")
+daily_fig_dir   <- file.path(fig_dir, "predictions_daily")
+monthly_fig_dir <- file.path(fig_dir, "predictions_monthly")
+
+models_file <- file.path(out_dir, "models.rds")
+if (!file.exists(models_file)) {
+  stop("models.rds not found in ", out_dir,
+       " -- this frequency / scheme has not been trained.")
+}
+if (!file.exists(in_file)) {
+  stop("Prediction dataset not found: ", in_file,
+       " -- run 02_build_prediction_dataset.R first")
+}
+
+dir.create(monthly_out_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(daily_fig_dir,   recursive = TRUE, showWarnings = FALSE)
+dir.create(monthly_fig_dir, recursive = TRUE, showWarnings = FALSE)
+
+
+# ---- Read the models, the observations and the grid --------------------------
+
+models <- readRDS(models_file)
+
+prep       <- load_and_clean(target_freq)
+df_obs     <- prep$df
+fod_levels <- prep$fod_levels
+
+grid_ds <- readRDS(in_file)
+
+base_grid <- expand.grid(lon = grid_ds$lon, lat = grid_ds$lat,
+                         KEEP.OUT.ATTRS = FALSE)
+n_pix     <- nrow(base_grid)
+lon_range <- range(base_grid$lon)
+lat_range <- range(base_grid$lat)
+
+subtitle <- sprintf("%d kHz - %s", target_freq, target_scheme)
+
+
+# ---- Functions ---------------------------------------------------------------
+
+# Covariates of the grid at one date, one row per pixel.
+#   date_idx : index of the date in the grid
+extract_grid_for_date <- function(date_idx) {
+  grid <- base_grid
+  grid$ftle <- as.vector(grid_ds$ftle[date_idx, , ])
+
+  # Pigment covariates of the models
+  for (v in setdiff(covariates_num, "ftle")) {
+    grid[[v]] <- as.vector(grid_ds$pig[[v]][date_idx, , ])
+  }
+
+  # fod: matched on the levels of the model, whatever the spaces (" 1" vs
+  # "1"); the string "NA" and the empty string are missing values
+  fod_chr <- trimws(as.character(as.vector(grid_ds$fod[date_idx, , ])))
+  fod_chr[fod_chr %in% c("NA", "")] <- NA_character_
+  grid$fod <- factor(fod_levels[match(fod_chr, trimws(fod_levels))],
+                     levels = fod_levels)
+  grid
+}
+
+# Mean prediction of the models of the folds, on the pixels where all the
+# covariates are available (NA elsewhere).
+predict_complete_pixels <- function(grid_df) {
+  complete <- stats::complete.cases(grid_df[, covariates_all])
+  pred <- rep(NA_real_, nrow(grid_df))
+  if (any(complete)) {
+    sub <- grid_df[complete, , drop = FALSE]
+    pred[complete] <- rowMeans(sapply(models, function(m) predict_rf(m, sub)))
+  }
+  pred
+}
+
+
+# ---- Dates to predict --------------------------------------------------------
+
+dates  <- as.Date(grid_ds$date)
+months <- format(dates, "%Y-%m")
+
+months_to_process <- if (is.null(target_months)) {
+  sort(unique(months))
+} else {
+  target_months
+}
+dates_idx <- which(months %in% months_to_process)
+if (length(dates_idx) == 0) {
+  stop("No date of the grid matches target_months = ",
+       paste(target_months, collapse = ", "))
+}
+cat(sprintf("%d dates to predict (%s)\n", length(dates_idx),
+            paste(months_to_process, collapse = ", ")))
+
+
+# ---- 1) Daily predictions, daily maps and monthly accumulation ---------------
+
+month_sum  <- list()         # sum of the predictions, per pixel
+month_n    <- list()         # number of valid predictions, per pixel
+month_days <- integer(0)     # number of days
+
+for (k in seq_along(dates_idx)) {
+  i    <- dates_idx[k]
+  ym   <- months[i]
+  grid <- extract_grid_for_date(i)
+  pred <- predict_complete_pixels(grid)
+
+  if (is.null(month_sum[[ym]])) {
+    month_sum[[ym]] <- numeric(n_pix)
+    month_n[[ym]]   <- integer(n_pix)
+    month_days[ym]  <- 0L
+  }
+  valid <- !is.na(pred)
+  month_sum[[ym]][valid] <- month_sum[[ym]][valid] + pred[valid]
+  month_n[[ym]]          <- month_n[[ym]] + valid
+  month_days[ym]         <- month_days[ym] + 1L
+
+  if (save_daily_maps) {
+    grid$pred <- pred
+    p <- ggplot(grid[valid, ], aes(x = lon, y = lat, fill = pred)) +
+      geom_tile() +
+      scale_fill_viridis_c() +
+      coord_quickmap(xlim = lon_range, ylim = lat_range) +
+      labs(title = "Predicted NASC (RF, complete pixels only)",
+           subtitle = sprintf("%s - %s - %.1f%% of pixels predicted",
+                              subtitle, format(dates[i]), 100 * mean(valid)),
+           x = "Longitude", y = "Latitude", fill = "log10(NASC)") +
+      theme_pipeline
+    ggsave(
+      file.path(daily_fig_dir,
+                sprintf("pred_%s.png", format(dates[i], "%Y%m%d"))),
+      p, width = 8, height = 6, dpi = 150
+    )
+  }
+
+  if (k %% 5 == 0 || k == length(dates_idx)) {
+    cat(sprintf("  ... %d / %d dates\n", k, length(dates_idx)))
+  }
+}
+
+
+# ---- 2) Monthly composites and residuals -------------------------------------
+
+cat("\nMonthly composites...\n")
+
+for (ym in names(month_sum)) {
+  mean_pred <- ifelse(month_n[[ym]] > 0, month_sum[[ym]] / month_n[[ym]],
+                      NA_real_)
+  composite <- tibble(
+    lon     = base_grid$lon,
+    lat     = base_grid$lat,
+    pred    = mean_pred,
+    n_valid = month_n[[ym]],
+    purity  = month_n[[ym]] / month_days[ym]   # share of the days with a value
+  )
+  valid_pixels <- composite %>% filter(!is.na(pred))
+  write.csv(valid_pixels,
+            file.path(monthly_out_dir,
+                      sprintf("monthly_composite_%s.csv", ym)),
+            row.names = FALSE)
+
+  p_mean <- ggplot(valid_pixels, aes(x = lon, y = lat, fill = pred)) +
+    geom_tile() +
+    scale_fill_viridis_c(limits = range(valid_pixels$pred)) +
+    coord_quickmap(xlim = lon_range, ylim = lat_range) +
+    labs(title = "Predicted NASC -- monthly composite (RF)",
+         subtitle = sprintf("%s - %s (%d days)", subtitle, ym, month_days[ym]),
+         x = "Longitude", y = "Latitude", fill = "Mean\nlog10(NASC)") +
+    theme_pipeline
+  ggsave(file.path(monthly_fig_dir, sprintf("monthly_mean_%s.png", ym)),
+         p_mean, width = 8, height = 6, dpi = 150)
+
+  # Residuals: each observation of the month against the nearest valid pixel
+  # (rejected if too far)
+  obs_month <- df_obs %>% filter(format(time, "%Y-%m") == ym)
+  if (nrow(obs_month) > 0 && nrow(valid_pixels) > 0) {
+    nn <- FNN::get.knnx(valid_pixels[, c("lon", "lat")],
+                        obs_month[, c("lon", "lat")], k = 1)
+    obs_month$match_dist    <- nn$nn.dist[, 1]
+    obs_month$pred_at_pixel <- valid_pixels$pred[nn$nn.index[, 1]]
+    obs_month <- obs_month %>%
+      filter(match_dist <= max_match_dist_deg) %>%
+      mutate(residual = NASC - pred_at_pixel)
+  } else {
+    obs_month <- obs_month[0, ]
+  }
+
+  if (nrow(obs_month) > 0) {
+    res_lim   <- max(abs(obs_month$residual))
+    scale_res <- scale_color_gradient2(low = "blue", mid = "white",
+                                       high = "red", midpoint = 0,
+                                       limits = c(-res_lim, res_lim))
+
+    # Residuals next to the composite
+    p_residual <- ggplot(obs_month, aes(x = lon, y = lat, color = residual)) +
+      geom_point(size = 1.2) +
+      scale_res +
+      coord_quickmap(xlim = lon_range, ylim = lat_range) +
+      labs(title = "Residuals (observed - predicted at the nearest pixel)",
+           subtitle = sprintf("%s - %s (%d obs, <= %.2f deg)", subtitle, ym,
+                              nrow(obs_month), max_match_dist_deg),
+           x = "Longitude", y = "Latitude", color = "Residual") +
+      theme_pipeline
+    p_side <- (p_mean + p_residual) +
+      plot_annotation(
+        title = sprintf("Monthly composite and residuals -- %s", ym)
+      )
+    ggsave(
+      file.path(monthly_fig_dir,
+                sprintf("monthly_mean_residuals_side_%s.png", ym)),
+      p_side, width = 14, height = 6, dpi = 150
+    )
+
+    # Residuals overlaid on the composite
+    p_overlay <- p_mean +
+      geom_point(data = obs_month, aes(x = lon, y = lat, color = residual),
+                 inherit.aes = FALSE, size = 0.9, alpha = 0.8) +
+      scale_res +
+      labs(title = "Monthly composite with the residuals overlaid",
+           color = "Residual")
+    ggsave(
+      file.path(monthly_fig_dir,
+                sprintf("monthly_mean_residuals_overlay_%s.png", ym)),
+      p_overlay, width = 8, height = 6, dpi = 150
+    )
+  } else {
+    cat(sprintf(
+      "  [!] %s: no observation within %.2f deg of a predicted pixel -- %s\n",
+      ym, max_match_dist_deg, "no residual map"
+    ))
+  }
+
+  cat(sprintf("  %s: %d days, %.1f%% of pixels with >= 1 value\n",
+              ym, month_days[ym], 100 * mean(composite$n_valid > 0)))
+}
+
+cat("\nResults saved in:", out_dir, "\n")
+cat("Figures saved in:", fig_dir, "\n")

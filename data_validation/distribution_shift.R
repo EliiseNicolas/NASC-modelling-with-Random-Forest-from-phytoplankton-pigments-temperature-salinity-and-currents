@@ -3,10 +3,10 @@
 #
 # Data validation: distribution shift between years and between FOD zones
 #
-# Input  : merged dataset (NASC, pigments, FTLE and FOD per ESU) at `freq` kHz
-#          <dataset_dir>/
-#            NASC_per_esu_pig_ftle_fod_<years_tag>_transect_<freq>kHz.rds
-#          restricted to the ESU with day == `day_code`
+# Input  : learning dataset (NASC, FOD, pigments and FTLE per ESU) at `freq`
+#          kHz (01_build_learning_dataset.R)
+#          <learning_dataset_dir>/learning_dataset_<years_tag>_<freq>kHz.rds
+#          restricted to the ESU with day == `day_code` (config.R)
 #
 # Steps  : how much the covariates (FTLE, pigments) and the NASC differ from
 #          one year to another and from one FOD zone to another
@@ -41,19 +41,19 @@ set.seed(42)
 
 # ---- Configuration -----------------------------------------------------------
 
-source("config.R")   # directories, dataset_file()
+source("config.R")   # directories, learning_dataset_file(), day_code
 
 freq     <- 38   # kHz
-day_code <- 3    # ESU kept: 3 = day (1 = night)
 
-in_file <- dataset_file(freq)
+in_file <- learning_dataset_file(freq)
 fig_dir <- file.path(fig_root_validation, "distribution_shift")
 
-# Covariates. `fod` is not one of them: it is the partition.
-pig_ratios   <- c("Per_totpig", "But_totpig", "Fuco_totpig", "Hex_totpig",
-                  "Allo_totpig", "Zea_totpig", "Chlb_totpig", "DvChla_totpig")
-covars       <- c("ftle", "Chla", "total_pig", pig_ratios)
-covars_phys  <- c("ftle")   # without the pigments (fewer missing values)
+# Covariates: those of the models (modelling/00_model_config.R), except `fod`,
+# which is the partition here.
+pig_ratios  <- c("Per_totpig", "But_totpig", "Fuco_totpig", "Hex_totpig",
+                 "Allo_totpig", "Zea_totpig", "Chlb_totpig", "DvChla_totpig")
+covars      <- c("ftle", "Chla_total", pig_ratios)
+covars_phys <- c("ftle")   # without the pigments (fewer missing values)
 
 # Univariate shift: minimum number of values in each of the two groups
 min_group_size <- 20

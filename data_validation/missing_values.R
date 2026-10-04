@@ -3,10 +3,10 @@
 #
 # Data validation: missing values
 #
-# Input  : merged dataset (NASC, pigments, FTLE and FOD per ESU) at `freq` kHz
-#          <dataset_dir>/
-#            NASC_per_esu_pig_ftle_fod_<years_tag>_transect_<freq>kHz.rds
-#          restricted to the ESU with day == `day_code`
+# Input  : learning dataset (NASC, FOD, pigments and FTLE per ESU) at `freq`
+#          kHz (01_build_learning_dataset.R)
+#          <learning_dataset_dir>/learning_dataset_<years_tag>_<freq>kHz.rds
+#          restricted to the ESU with day == `day_code` (config.R)
 #
 # Steps  : for the variables `vars` (nasc, fod, Chla, ftle)
 #          1) map of the number of missing values per cell of a regular grid
@@ -40,13 +40,12 @@ sf_use_s2(FALSE)
 
 # ---- Configuration -----------------------------------------------------------
 
-source("config.R")   # directories, dataset_file()
+source("config.R")   # directories, learning_dataset_file(), day_code
 
 freq     <- 38   # kHz
-day_code <- 3    # ESU kept: 3 = day (1 = night)
 res_km   <- 20   # cell size of the map (km)
 
-in_file <- dataset_file(freq)
+in_file <- learning_dataset_file(freq)
 fig_dir <- file.path(fig_root_validation, "missing_values")
 
 # Variables shown in the map and in the bar charts

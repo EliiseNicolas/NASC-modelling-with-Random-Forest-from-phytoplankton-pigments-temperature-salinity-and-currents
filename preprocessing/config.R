@@ -17,7 +17,7 @@
 # ---- Roots (machine-specific: edit these two lines) --------------------------
 
 data_root <- "/run/media/mmolinet/DATA1/data_elise_stage"
-fig_root  <- "~/Elisou/part_V_final_model_clean_rep/figures/data_analysis"
+fig_root  <- "/home/mmolinet/Elisou/git/figures/preprocessing"
 
 
 # ---- Campaigns ---------------------------------------------------------------

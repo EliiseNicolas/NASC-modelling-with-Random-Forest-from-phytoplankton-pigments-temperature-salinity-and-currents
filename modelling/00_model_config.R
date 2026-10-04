@@ -22,7 +22,6 @@ suppressPackageStartupMessages({
   library(ggplot2)
   library(patchwork)
   library(ranger)
-  library(FNN)
   library(lubridate)
 })
 

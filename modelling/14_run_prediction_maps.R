@@ -11,26 +11,28 @@
 #          models of the target frequency and scheme
 #          (10_run_nested_cv_training.R: models.rds)
 #          learning dataset of the target frequency
-#          (01_build_learning_dataset.R), for the residuals
+#          (01_build_learning_dataset.R), for the FOD levels of the models
 #
 # Steps  : 1) single pass over the dates: predict each day once (mean of the
 #             models of the folds), draw the daily map and accumulate the sum
 #             and the number of valid values of the month (constant memory)
-#          2) monthly composites: mean map, with the residuals next to it and
-#             overlaid
+#          2) monthly composites: map of the mean prediction, with a second
+#             map (and colour bar) of the number of daily predictions
+#             averaged in each pixel
 #
 # Output : in <model_out_root>/<freq>kHz/rf/<scheme>/predictions_monthly/
-#            monthly_composite_<YYYY-MM>.csv
+#            monthly_composite_<YYYY-MM>.csv   (lon, lat, pred, n_valid,
+#                                               purity)
 #          in <fig_root_modelling>/<freq>kHz/rf/<scheme>/predictions_daily/
 #            pred_<YYYYMMDD>.png
 #          in <fig_root_modelling>/<freq>kHz/rf/<scheme>/predictions_monthly/
 #            monthly_mean_<YYYY-MM>.png
-#            monthly_mean_residuals_side_<YYYY-MM>.png
-#            monthly_mean_residuals_overlay_<YYYY-MM>.png
+#            monthly_mean_n_days_<YYYY-MM>.png
 #
-# The monthly residuals pair each observation of the month with the nearest
-# valid pixel (rejected beyond `max_match_dist_deg`). They are NOT the
-# cross-validation residuals.
+# A pixel is predicted on a given day only if all its covariates are
+# available: the number of daily predictions behind a monthly mean varies
+# from one pixel to another, from 1 to the number of dates of the month in
+# the prediction dataset.
 #
 # Usage  : optional target, to set in the console before source()
 #            target_freq <- 38 ; target_scheme <- "naive_RS_80_20"
@@ -52,10 +54,6 @@ if (!exists("target_freq"))     target_freq     <- default_target_freq
 if (!exists("target_scheme"))   target_scheme   <- default_target_scheme
 if (!exists("target_months"))   target_months   <- NULL
 if (!exists("save_daily_maps")) save_daily_maps <- TRUE
-
-# Maximum distance between an observation and a valid pixel to compute a
-# residual (degrees)
-max_match_dist_deg <- 0.1
 
 in_file <- prediction_dataset_file
 out_dir <- scheme_out_dir(target_freq, target_scheme)
@@ -84,9 +82,8 @@ dir.create(monthly_fig_dir, recursive = TRUE, showWarnings = FALSE)
 
 models <- readRDS(models_file)
 
-prep       <- load_and_clean(target_freq)
-df_obs     <- prep$df
-fod_levels <- prep$fod_levels
+# Levels of fod in the data the models were trained on
+fod_levels <- load_and_clean(target_freq)$fod_levels
 
 grid_ds <- readRDS(in_file)
 
@@ -199,19 +196,20 @@ for (k in seq_along(dates_idx)) {
 }
 
 
-# ---- 2) Monthly composites and residuals -------------------------------------
+# ---- 2) Monthly composites --------------------------------------------------
 
 cat("\nMonthly composites...\n")
 
 for (ym in names(month_sum)) {
+  n_days    <- month_days[ym]
   mean_pred <- ifelse(month_n[[ym]] > 0, month_sum[[ym]] / month_n[[ym]],
                       NA_real_)
   composite <- tibble(
     lon     = base_grid$lon,
     lat     = base_grid$lat,
     pred    = mean_pred,
-    n_valid = month_n[[ym]],
-    purity  = month_n[[ym]] / month_days[ym]   # share of the days with a value
+    n_valid = month_n[[ym]],            # daily predictions averaged
+    purity  = month_n[[ym]] / n_days    # share of the days with a prediction
   )
   valid_pixels <- composite %>% filter(!is.na(pred))
   write.csv(valid_pixels,
@@ -219,79 +217,43 @@ for (ym in names(month_sum)) {
                       sprintf("monthly_composite_%s.csv", ym)),
             row.names = FALSE)
 
+  # Mean prediction
   p_mean <- ggplot(valid_pixels, aes(x = lon, y = lat, fill = pred)) +
     geom_tile() +
     scale_fill_viridis_c(limits = range(valid_pixels$pred)) +
     coord_quickmap(xlim = lon_range, ylim = lat_range) +
     labs(title = "Predicted NASC -- monthly composite (RF)",
-         subtitle = sprintf("%s - %s (%d days)", subtitle, ym, month_days[ym]),
+         subtitle = sprintf("%s - %s (%d days)", subtitle, ym, n_days),
          x = "Longitude", y = "Latitude", fill = "Mean\nlog10(NASC)") +
     theme_pipeline
   ggsave(file.path(monthly_fig_dir, sprintf("monthly_mean_%s.png", ym)),
          p_mean, width = 8, height = 6, dpi = 150)
 
-  # Residuals: each observation of the month against the nearest valid pixel
-  # (rejected if too far)
-  obs_month <- df_obs %>% filter(format(time, "%Y-%m") == ym)
-  if (nrow(obs_month) > 0 && nrow(valid_pixels) > 0) {
-    nn <- FNN::get.knnx(valid_pixels[, c("lon", "lat")],
-                        obs_month[, c("lon", "lat")], k = 1)
-    obs_month$match_dist    <- nn$nn.dist[, 1]
-    obs_month$pred_at_pixel <- valid_pixels$pred[nn$nn.index[, 1]]
-    obs_month <- obs_month %>%
-      filter(match_dist <= max_match_dist_deg) %>%
-      mutate(residual = NASC - pred_at_pixel)
-  } else {
-    obs_month <- obs_month[0, ]
-  }
+  # Number of daily predictions averaged in each pixel, with its own colour
+  # bar (same scale for all the months with the same number of days)
+  p_n_days <- ggplot(valid_pixels, aes(x = lon, y = lat, fill = n_valid)) +
+    geom_tile() +
+    scale_fill_viridis_c(option = "magma", limits = c(1, max(n_days, 2))) +
+    coord_quickmap(xlim = lon_range, ylim = lat_range) +
+    labs(title = "Number of daily predictions in the monthly mean",
+         subtitle = sprintf("%s - %s (%d days)", subtitle, ym, n_days),
+         x = "Longitude", y = "Latitude", fill = "Number\nof days") +
+    theme_pipeline
 
-  if (nrow(obs_month) > 0) {
-    res_lim   <- max(abs(obs_month$residual))
-    scale_res <- scale_color_gradient2(low = "blue", mid = "white",
-                                       high = "red", midpoint = 0,
-                                       limits = c(-res_lim, res_lim))
-
-    # Residuals next to the composite
-    p_residual <- ggplot(obs_month, aes(x = lon, y = lat, color = residual)) +
-      geom_point(size = 1.2) +
-      scale_res +
-      coord_quickmap(xlim = lon_range, ylim = lat_range) +
-      labs(title = "Residuals (observed - predicted at the nearest pixel)",
-           subtitle = sprintf("%s - %s (%d obs, <= %.2f deg)", subtitle, ym,
-                              nrow(obs_month), max_match_dist_deg),
-           x = "Longitude", y = "Latitude", color = "Residual") +
-      theme_pipeline
-    p_side <- (p_mean + p_residual) +
-      plot_annotation(
-        title = sprintf("Monthly composite and residuals -- %s", ym)
-      )
-    ggsave(
-      file.path(monthly_fig_dir,
-                sprintf("monthly_mean_residuals_side_%s.png", ym)),
-      p_side, width = 14, height = 6, dpi = 150
+  p_side <- (p_mean + p_n_days) +
+    plot_annotation(
+      title = sprintf("Monthly composite and number of days -- %s", ym)
     )
+  ggsave(
+    file.path(monthly_fig_dir, sprintf("monthly_mean_n_days_%s.png", ym)),
+    p_side, width = 14, height = 6, dpi = 150
+  )
 
-    # Residuals overlaid on the composite
-    p_overlay <- p_mean +
-      geom_point(data = obs_month, aes(x = lon, y = lat, color = residual),
-                 inherit.aes = FALSE, size = 0.9, alpha = 0.8) +
-      scale_res +
-      labs(title = "Monthly composite with the residuals overlaid",
-           color = "Residual")
-    ggsave(
-      file.path(monthly_fig_dir,
-                sprintf("monthly_mean_residuals_overlay_%s.png", ym)),
-      p_overlay, width = 8, height = 6, dpi = 150
-    )
-  } else {
-    cat(sprintf(
-      "  [!] %s: no observation within %.2f deg of a predicted pixel -- %s\n",
-      ym, max_match_dist_deg, "no residual map"
-    ))
-  }
-
-  cat(sprintf("  %s: %d days, %.1f%% of pixels with >= 1 value\n",
-              ym, month_days[ym], 100 * mean(composite$n_valid > 0)))
+  cat(sprintf(
+    "  %s: %d days, %.1f%% of pixels predicted, median of %g days per pixel\n",
+    ym, n_days, 100 * mean(composite$n_valid > 0),
+    median(valid_pixels$n_valid)
+  ))
 }
 
 cat("\nResults saved in:", out_dir, "\n")

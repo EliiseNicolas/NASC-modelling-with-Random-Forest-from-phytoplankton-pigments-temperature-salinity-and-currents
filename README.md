@@ -79,8 +79,8 @@ modelling/
    install.packages(c("dplyr", "tidyr", "patchwork", "gstat", "ranger",
                       "naniar", "UpSetR", "scales"))
    # modelling
-   install.packages(c("purrr", "tibble", "lubridate", "FNN", "shapr",
-                      "Rtsne", "remotes"))
+   install.packages(c("purrr", "tibble", "lubridate", "shapr", "Rtsne",
+                      "remotes"))
    remotes::install_github("ModelOriented/treeshap")
    ```
 
@@ -220,7 +220,7 @@ functions; files `10` to `14` are the scripts to run.
 | `11_run_shap_treeshap.R` | output of 10 | exact SHAP values (TreeSHAP): importance and direction of the effects |
 | `12_run_shap_dependent_aas.R` | output of 10 | SHAP values for dependent covariates (Aas et al. 2019, `shapr`); slow |
 | `13_run_tsne.R` | output of 10 | t-SNE of the covariate space, coloured by NASC, FOD and residual |
-| `14_run_prediction_maps.R` | output of 10, prediction dataset | daily prediction maps and monthly composites with residuals; very long |
+| `14_run_prediction_maps.R` | output of 10, prediction dataset | daily prediction maps, monthly composites and number of daily predictions behind each monthly mean; very long |
 
 ```r
 source("modelling/run_all_pipeline_rf.R")   # all the steps, in order
